@@ -679,16 +679,20 @@ dictEntry *dictGetRandomKey(dict *d)
  * of continuous elements to run some kind of algorithm or to produce
  * statistics. However the function is much faster than dictGetRandomKey()
  * at producing N elements. */
+// 从d中，随机挑出count个元素，放在des里，返回实际放进des中的个数
 unsigned int dictGetSomeKeys(dict *d, dictEntry **des, unsigned int count) {
     unsigned long j; /* internal hash table id, 0 or 1. */
     unsigned long tables; /* 1 or 2 tables? */
     unsigned long stored = 0, maxsizemask;
     unsigned long maxsteps;
 
+    // keyspace空间里现存的key比count少，count改成现存key的总数
     if (dictSize(d) < count) count = dictSize(d);
+    // 将count放大10倍，默认count为5，即默认情况最多随机50次，凑不齐count个元素也要返回
     maxsteps = count*10;
 
     /* Try to do a rehashing work proportional to 'count'. */
+    // 如果keyspace在做rehash，那就主动再做count次
     for (j = 0; j < count; j++) {
         if (dictIsRehashing(d))
             _dictRehashStep(d);
@@ -696,12 +700,15 @@ unsigned int dictGetSomeKeys(dict *d, dictEntry **des, unsigned int count) {
             break;
     }
 
+    // 在做rehash的话，要遍历两个table
     tables = dictIsRehashing(d) ? 2 : 1;
     maxsizemask = d->ht[0].sizemask;
     if (tables > 1 && maxsizemask < d->ht[1].sizemask)
+        // 两个table时，采用元素最多那个table的sizemask
         maxsizemask = d->ht[1].sizemask;
 
     /* Pick a random point inside the larger table. */
+    // 按掩码随机选一个位置
     unsigned long i = random() & maxsizemask;
     unsigned long emptylen = 0; /* Continuous empty entries so far. */
     while(stored < count && maxsteps--) {
@@ -727,12 +734,15 @@ unsigned int dictGetSomeKeys(dict *d, dictEntry **des, unsigned int count) {
             if (he == NULL) {
                 emptylen++;
                 if (emptylen >= 5 && emptylen > count) {
+                    // 已经连续踩空5次以上了，需要重新随机一个新位置
                     i = random() & maxsizemask;
                     emptylen = 0;
                 }
             } else {
                 emptylen = 0;
                 while (he) {
+                    // 随机的位置有元素，那就从它开始，整个链表都放在des里
+                    // 如果个数已经满足count，就直接return
                     /* Collect all the elements of the buckets found non
                      * empty while iterating. */
                     *des = he;
@@ -745,6 +755,7 @@ unsigned int dictGetSomeKeys(dict *d, dictEntry **des, unsigned int count) {
         }
         i = (i+1) & maxsizemask;
     }
+    // 这里返回的stored个数不等于count
     return stored;
 }
 

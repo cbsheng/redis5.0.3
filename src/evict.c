@@ -54,6 +54,7 @@
 struct evictionPoolEntry {
     unsigned long long idle;    /* Object idle time (inverse frequency for LFU) */
     sds key;                    /* Key name. */
+    // cached用途就是对长度小于255的key可以复用内存空间。否则每次都创建新的sds对象影响性能
     sds cached;                 /* Cached SDS object for key name. */
     int dbid;                   /* Key DB number. */
 };
@@ -186,8 +187,10 @@ void evictionPoolPopulate(int dbid, dict *sampledict, dict *keydict, struct evic
          * idle just because the code initially handled LRU, but is in fact
          * just a score where an higher score means better candidate. */
         if (server.maxmemory_policy & MAXMEMORY_FLAG_LRU) {
+            // 根据LRU的策略获取key的空闲时间
             idle = estimateObjectIdleTime(o);
         } else if (server.maxmemory_policy & MAXMEMORY_FLAG_LFU) {
+            // 根据LRU的策略获取key的空间时间
             /* When we use an LRU policy, we sort the keys by idle time
              * so that we expire keys starting from greater idle time.
              * However when the policy is an LFU one, we have a frequency
@@ -221,6 +224,8 @@ void evictionPoolPopulate(int dbid, dict *sampledict, dict *keydict, struct evic
             /* Inserting in the middle. Now k points to the first element
              * greater than the element to insert.  */
             // 末端还有空间，即pool没满，那可以安全地把对象放置在k位置
+            // 放之前，先把给对象挪个位置
+            // 例如：e要放进[a,b,c,d,NULL]中c的位置，先挪成[a,b,c,c,d]，然后把e覆盖进去，变成[a,b,e,c,d]
             if (pool[EVPOOL_SIZE-1].key == NULL) {
                 /* Free space on the right? Insert at k shifting
                  * all the elements from k to end to the right. */
@@ -231,7 +236,8 @@ void evictionPoolPopulate(int dbid, dict *sampledict, dict *keydict, struct evic
                     sizeof(pool[0])*(EVPOOL_SIZE-k-1));
                 pool[k].cached = cached;
             } else {
-                // pool空间满了，踢掉最前面的元素
+                // pool空间满了，踢掉池子第一个元素，给对象挪个位置
+                // 例如：e要放进[a,b,c,d]中c的位置，先挪成[b,c,c,d]，然后把e覆盖进去，变成[b,c,e,d]
                 /* No free space on right? Insert at k-1 */
                 k--;
                 /* Shift all elements on the left of k (included) to the
@@ -249,8 +255,10 @@ void evictionPoolPopulate(int dbid, dict *sampledict, dict *keydict, struct evic
          * premature optimizbla bla bla bla. */
         int klen = sdslen(key);
         if (klen > EVPOOL_CACHED_SDS_SIZE) {
+            // key的长度大于255，就只能分配一个新的sds对象
             pool[k].key = sdsdup(key);
         } else {
+            // 否则可以复用cached字段的内存空间
             memcpy(pool[k].cached,key,klen+1);
             sdssetlen(pool[k].cached,klen);
             pool[k].key = pool[k].cached;
@@ -480,6 +488,7 @@ int freeMemoryIfNeeded(void) {
         dict *dict;
         dictEntry *de;
 
+        // LRU/LFU策略
         if (server.maxmemory_policy & (MAXMEMORY_FLAG_LRU|MAXMEMORY_FLAG_LFU) ||
             server.maxmemory_policy == MAXMEMORY_VOLATILE_TTL)
         {
@@ -511,6 +520,7 @@ int freeMemoryIfNeeded(void) {
                     if (pool[k].key == NULL) continue;
                     bestdbid = pool[k].dbid;
 
+                    // 根据不同的淘汰策略切换到不同的keyspace
                     if (server.maxmemory_policy & MAXMEMORY_FLAG_ALLKEYS) {
                         de = dictFind(server.db[pool[k].dbid].dict,
                             pool[k].key);
@@ -520,6 +530,7 @@ int freeMemoryIfNeeded(void) {
                     }
 
                     /* Remove the entry from the pool. */
+                    // 这儿很重要，如果对应的key长度大于255，即没复用cached的内存。那记得释放它申请的内存
                     if (pool[k].key != pool[k].cached)
                         sdsfree(pool[k].key);
                     pool[k].key = NULL;
@@ -528,6 +539,7 @@ int freeMemoryIfNeeded(void) {
                     /* If the key exists, is our pick. Otherwise it is
                      * a ghost and we need to try the next element. */
                     if (de) {
+                        // 这个key有可能不存在，例如它是个带过期时间的key，在定时任务中被删掉了。
                         bestkey = dictGetKey(de);
                         break;
                     } else {
@@ -538,6 +550,7 @@ int freeMemoryIfNeeded(void) {
         }
 
         /* volatile-random and allkeys-random policy */
+        // 随机淘汰key策略
         else if (server.maxmemory_policy == MAXMEMORY_ALLKEYS_RANDOM ||
                  server.maxmemory_policy == MAXMEMORY_VOLATILE_RANDOM)
         {
